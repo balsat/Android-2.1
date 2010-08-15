@@ -1,0 +1,402 @@
+#!/bin/sh
+fail() {
+	/bin/echo "Failed"
+		/bin/echo "$1"
+		exec /bin/sh
+}
+
+/bin/mount -o remount,rw / /
+
+PATH=/sbin:/system/sbin:/bin:/system/bin:/system/xbin:/system/xbin/bb:/data/local/bin
+
+/bin/echo "Rootfs loaded."
+
+/bin/mount -t proc proc /proc
+/bin/mount -t sysfs sys /sys
+
+
+partition=mmcblk0p1
+
+# Try unpartitioned card
+if [ ! -d /sys/block/mmcblk0/$partition ] ; then
+	partition=mmcblk0
+fi
+
+if [ -f /sys/class/vogue_hw/gsmphone ] ; then
+	echo "GSM phone found"
+fi
+
+#mkdir -m 0777 /sdcard
+#fsck already done in initrd
+mount -t vfat -o fmask=0000,dmask=0000,rw,flush,noatime,nodiratime /dev/block/$partition /sdcard
+[ $? -eq 0 ] || echo "Failed to mount the SD card."
+
+
+if [ -d /sdcard/AndroidApps ] ; then
+        echo Copying Applications
+        if [ ! -d /data/app ] ; then
+                mkdir -m 0771 /data/app
+        fi
+        /bin/cp /sdcard/AndroidApps/* /data/app
+        chown -R 1000:1000 /data/app
+fi
+
+if [ ! -d /media ] ; then
+        echo You have no media folder, please extract the resources to "/media" folder
+fi
+
+cp -a /system/etc/* /etc
+cp -ar /init.etc/* /etc/
+
+LCDDENSITY=`/bin/grep -o "lcd.density=.*" /proc/cmdline | /bin/sed -e "s/.*lcd.density=//g" -e "s/ .*//g"`
+
+if [ "$LCDDENSITY" != "" ] ; then
+	echo "ro.sf.lcd_density=$LCDDENSITY" >> /etc/default.prop
+	echo Setting ro.sf.lcd_density=$LCDDENSITY
+fi
+
+if [ ! -d /shared_prefs ] ; then
+	mkdir -m 0770 /shared_prefs
+fi
+chmod 0770 /shared_prefs
+chown 1000:1000 /shared_prefs
+
+cp /system/build.prop /tmp/build.prop
+KAISER=0
+DIAMOND=0
+WIFI_TI=0
+WIFI_BCM=0
+### Is this a Kaiser?
+if cat /proc/cpuinfo|grep -q Kaiser ; then
+	echo "KAISER detected"
+	KAISER=1
+	WIFI_TI=1
+elif cat /proc/cpuinfo|grep -q Polaris ; then
+	echo "POLARIS detected"
+	KAISER=1
+	WIFI_TI=1
+elif cat /proc/cpuinfo|grep -q Diamond ; then
+	echo "DIAMOND detected"
+	DIAMOND=1
+	WIFI_TI=1
+elif cat /proc/cpuinfo|grep -q Raphael ; then
+	echo "RAPHAEL detected"
+	DIAMOND=1
+	WIFI_TI=1
+elif cat /proc/cpuinfo|grep -q blackstone ; then
+	echo "BLACKSTONE detected"
+	DIAMOND=1
+	WIFI_TI=1
+elif cat /proc/cpuinfo|grep -q Topaz ; then
+	echo "TOPAZ detected"
+	DIAMOND=1
+	WIFI_TI=1
+elif cat /proc/cpuinfo|grep -q Rhodium ; then
+	echo "RHODIUM detected"
+	DIAMOND=1
+	WIFI_BCM=1
+else
+	echo "VOGUE detected"
+	sed -i s/^wifi/#wifi/ /tmp/build.prop
+fi
+
+mount --bind /tmp/build.prop /system/build.prop
+
+### Fix su on some builds...
+mount --bind /bin/su /system/bin/su 2> /dev/null
+mount --bind /bin/su /system/xbin/su 2> /dev/null
+
+RCSCRIPT=""
+RCCONFIG=""
+
+echo "Checking for build type..."
+if [ -f /system/hero.build ] ; then
+	echo "Hero build detected"
+	RCSCRIPT="hero"
+	RCCONFIG="hero"
+	ln /data/app_s /system/app
+
+elif [ -f /system/eclairhero.build ] ; then
+	echo "HERO 2.1 BUILD DETECTED -- ECLAIR"
+	RCSCRIPT="eclairhero"
+	RCCONFIG="eclairhero"
+	mount --bind /lib/eclair/hw /system/lib/hw
+
+elif [ -f /system/eclair.build ] ; then
+	echo "Eclair build detected"
+	RCSCRIPT="eclair"
+	RCCONFIG="eclair"
+	mount --bind /lib/eclair/hw /system/lib/hw
+
+elif [ -f /system/tattoo.build ] ; then
+	echo "Tattoo build detected"
+	RCSCRIPT="tattoo"
+	RCCONFIG="tattoo"
+
+elif [ -f /system/donut.build ] ; then
+	echo "Donut build detected"
+	RCSCRIPT="donut"
+	RCCONFIG="donut"
+	mount --bind /lib/donut/hw /system/lib/hw
+
+elif [ -d /system/lib/donut ] ; then
+	echo "Donut build detected"
+	RCSCRIPT="donut"
+	RCCONFIG="donut"
+
+elif [ -f /system/xrom.build ] ; then
+	echo "xROM build detected"
+	RCSCRIPT="xrom"
+	RCCONFIG="xrom"
+
+elif [ -f /system/rogers.build ] ; then
+	echo "Rogers build detected"
+	RCSCRIPT="rogers"
+	RCCONFIG="rogers"
+
+elif [ -f /system/cyanogen.build ] ; then
+	echo "cyanogen experimental detected.....eating donuts"
+	RCSCRIPT="cyanogen"
+	RCCONFIG="cyanogen"
+
+elif [ -f /system/custom.build ] ; then
+	echo "Custom init.rc detected"
+	cp /system/sysinit.rc /build.cfg/init.sysinit.rc
+	RCCONFIG="hero"
+	RCSCRIPT="sysinit"
+	
+else
+	echo "Unknown Android build. Assuming Ion variant"
+	RCSCRIPT="ion"
+	RCCONFIG="ion"
+
+	# for the fake sensors library
+	mount /lib/hw /system/lib/hw -o loop
+	chmod 666 /dev/input/event0
+
+	if [ $DIAMOND -eq 1 ] ; then
+		RCCONFIG="ion.diamond"
+	fi
+fi
+
+if [ $KAISER -eq 1 ] ; then
+	RCSCRIPT="$RCSCRIPT.kaiser"
+fi
+
+echo "using /init.$RCSCRIPT.rc as init.rc"
+echo "using /conf/$RCCONFIG.user.conf"
+
+cp "/init.cfg/init.$RCSCRIPT.rc" /etc/init.rc
+
+#Assume this rootfs.img will be used only on "good" devices
+#Meaning raph/diam/blac/
+
+# echo /dev/block/mmcblk0p2 > /sys/devices/platform/usb_mass_storage/lun0/file
+ifconfig usb0 192.168.20.1 up
+busybox telnetd -b 192.168.20.1 -l /bin/sh
+#chmod 4755 /bin/su
+#mkdir -m 0777 /smodem
+if [ -d /dropbear/ ] ; then
+	echo "Starting SSH"
+	mknod /dev/random c 1 8
+	mknod /dev/urandom c 1 9
+	/bin/dropbear -r /dropbear/dropbear_rsa_host_key -s
+fi
+
+if [ "$WIFI_TI" = "1" ] || [ "$WIFI_BCM" = "1" ];then
+	if [ -e "/sdcard/modules-$(uname -r).tar.gz" ] && ! `strings /data/modules/wlan.ko 2>/dev/null | grep -q "vermagic=$(uname -r)"`; then
+		echo "Installing /sdcard/modules-$(uname -r).tar.gz"
+		if [ ! -d "/data/modules" ] ; then
+			mkdir /data/modules
+		fi
+		tar xzf /sdcard/modules-$(uname -r).tar.gz -C /data/modules
+		ln -s /data/modules /data/modules/`uname -r`
+
+		[ -f /etc/wifi/wlan.ko ] && rm /etc/wifi/wlan.ko
+		cp -R /etc/wifi/* /data/modules/
+		depmod
+	else
+		echo "Modules already unpacked for this kernel version -- skipping installation of /sdcard/modules-$(uname -r).tar.gz"
+	fi
+	mount --bind /data/modules /lib/modules
+	mount --bind /data/modules /system/lib/modules
+	sed -i s/^#wifi/wifi/ /tmp/build.prop
+fi
+
+mount --bind /lib/eclair/libhardware_legacy.so /system/lib/libhardware_legacy.so
+if [ "$WIFI_TI" = "1" ];then
+	if [ "`grep -c ^wifi /tmp/build.prop`" != "2" ]; then
+		echo "wifi.interface = tiwlan0" >> /tmp/build.prop
+		echo "wifi.supplicant_scan_interval = 45" >> /tmp/build.prop
+	fi
+fi
+
+if [ "$WIFI_BCM" = "1" ] ;then
+	if [ "`grep -c ^wifi /tmp/build.prop`" != "2" ]; then
+		echo "wifi.interface = eth0" >> /tmp/build.prop
+		echo "wifi.supplicant_scan_interval = 45" >> /tmp/build.prop
+	fi
+
+	# fyi: firmware is loaded from /etc/wifi/bcm432x/bcm4325-rtecdc.bin, nvram from /data/wifi-nvram.txt
+
+	mount --bind /etc/wifi/bcm432x/dhcpcd.conf /system/etc/dhcpcd/dhcpcd.conf
+	mount --bind /etc/wifi/bcm432x/wpa_supplicant.conf /system/etc/wifi/wpa_supplicant.conf
+
+	# init.rc: fix wpa_supplicant service
+	sed -i s/-itiwlan0/-ieth0/ /etc/init.rc
+	sed -i s/-Dtiwlan0/-Dwext/ /etc/init.rc
+
+	# init.rc: fix dhcpcd service, wifi.interface, and wpa_supplicant service socket
+	sed -i s/tiwlan0/eth0/ /etc/init.rc
+
+	# init.rc:
+	sed -i s/user\ wifi/#user\ wifi/ /etc/init.rc
+	sed -i s/group\ wifi/#group\ wifi/ /etc/init.rc
+
+	# extract nvram (todo: clean this up/integrate with TI calibration)
+	if [ ! -e /data/wifi-nvram.txt ]; then
+		for SKIP in 5744 4736;do
+			insmod /lib/modules/mtdchar.ko
+			mknod /dev/mtd0ro c 90 1
+			mkdir /lib/modules/$(uname -r)
+
+			dd if=/dev/mtd0ro of=/tmp/tempcal bs=8192 count=1 skip=$SKIP
+			rm /dev/mtd0ro
+			rmmod mtdchar
+			rmdir /lib/modules/$(uname -r)
+			dd if=/tmp/tempcal of=/data/wifi-nvram.txt bs=1 count=466
+			rm /tmp/tempcal
+		
+			if grep nocrc= /data/wifi-nvram.txt 2>&1 > /dev/null;then 
+				break
+			fi;
+		done
+		if [ "$SKIP" = "5744" ];then
+			echo "CDMA Rhodium detected"
+		fi;
+		if [ "$SKIP" = "4736" ];then
+			echo "GSM Rhodium detected"
+		fi;
+
+	fi
+fi
+
+
+if [ -f "/conf/$RCCONFIG.user.conf" ]; then
+	/bin/userinit.sh -c "/conf/$RCCONFIG.user.conf"
+else
+	echo "No user config files ($RCCONFIG) found on sdcard"
+fi
+
+mount -tdebugfs none /dbgfs
+#Activate baclight control
+echo 3 > /sys/class/htc_hw/test
+#Smooth scroll
+echo 40 >/sys/devices/system/cpu/cpu0/cpufreq/ondemand/up_threshold
+#Activate full charging
+echo 2 > /dbgfs/htc_battery/charger_state
+
+echo 1024 > /dbgfs/micropklt_dbg/sleep_leds
+
+if /bin/grep -c 'physkeyboard=fuze' /proc/cmdline >/dev/null ; then
+	echo "USING RAPH110|FUZE LAYOUT"
+	cp -f /init.etc/keymaps/fuze_microp-keypad.kcm.bin /etc/keymaps/microp-keypad.kcm.bin
+	cp -f /init.etc/keymaps/fuze_microp-keypad.kl /etc/keymaps/microp-keypad.kl
+	cp -f /init.etc/keymaps/fuze_raph_navi_pad.kl /etc/keymaps/raph_navi_pad.kl
+elif /bin/grep -c 'physkeyboard=raph' /proc/cmdline >/dev/null ; then
+	echo "USING NEW RAPH LAYOUT"
+        cp -f /init.etc/keymaps/raphfix_microp-keypad.kcm.bin /etc/keymaps/microp-keypad.kcm.bin
+elif /bin/grep -c 'physkeyboard=nordic_raph' /proc/cmdline >/dev/null ; then
+	echo "USING NEW NORDIC RAPH LAYOUT"
+        cp -f /init.etc/keymaps/raphfix_microp-keypad-swedish.kcm.bin /etc/keymaps/microp-keypad.kcm.bin
+elif /bin/grep -c 'physkeyboard=tilt2' /proc/cmdline >/dev/null ; then
+	echo "USING EXPERIMENTAL TILT2 LAYOUT"
+        cp -f /init.etc/keymaps/tilt2_microp-keypad.kl /etc/keymaps/microp-keypad.kl
+	cp -f /init.etc/keymaps/tilt2_microp-keypad.kcm.bin /etc/keymaps/microp-keypad.kcm.bin
+	cp -f /init.etc/keymaps/tilt2_navi_pad.kl /etc/keymaps/raph_navi_pad.kl
+elif /bin/grep -c 'physkeyboard=rhod210' /proc/cmdline >/dev/null ; then
+	echo "USING EXPERIMENTAL RHOD210 LAYOUT"
+        cp -f /init.etc/keymaps/rhod210_microp-keypad.kl /etc/keymaps/microp-keypad.kl
+	cp -f /init.etc/keymaps/rhod210_microp-keypad.kcm.bin /etc/keymaps/microp-keypad.kcm.bin
+	cp -f /init.etc/keymaps/rhod210_navi_pad.kl /etc/keymaps/raph_navi_pad.kl
+elif /bin/grep -c 'physkeyboard=rhod100_de' /proc/cmdline >/dev/null ; then
+	echo "USING RHOD100 DE LAYOUT"
+        cp -f /init.etc/keymaps/rhod100_de_microp-keypad.kl /etc/keymaps/microp-keypad.kl
+	cp -f /init.etc/keymaps/rhod100_de_microp-keypad.kcm.bin /etc/keymaps/microp-keypad.kcm.bin
+	cp -f /init.etc/keymaps/rhod100_de_navi_pad.kl /etc/keymaps/raph_navi_pad.kl
+elif /bin/grep -c 'physkeyboard=rhod100_fr' /proc/cmdline >/dev/null ; then
+	echo "USING RHOD100 FR LAYOUT"
+        cp -f /init.etc/keymaps/rhod100_fr_microp-keypad.kl /etc/keymaps/microp-keypad.kl
+	cp -f /init.etc/keymaps/rhod100_fr_microp-keypad.kcm.bin /etc/keymaps/microp-keypad.kcm.bin
+	cp -f /init.etc/keymaps/rhod100_fr_navi_pad.kl /etc/keymaps/raph_navi_pad.kl
+elif /bin/grep -c 'physkeyboard=rhod100_it' /proc/cmdline >/dev/null ; then
+	echo "USING RHOD100 IT LAYOUT"
+        cp -f /init.etc/keymaps/rhod100_it_microp-keypad.kl /etc/keymaps/microp-keypad.kl
+	cp -f /init.etc/keymaps/rhod100_it_microp-keypad.kcm.bin /etc/keymaps/microp-keypad.kcm.bin
+	cp -f /init.etc/keymaps/rhod100_it_navi_pad.kl /etc/keymaps/raph_navi_pad.kl
+elif /bin/grep -c 'physkeyboard=rhod100_uk' /proc/cmdline >/dev/null ; then
+	echo "USING RHOD100 UK LAYOUT"
+        cp -f /init.etc/keymaps/rhod100_uk_microp-keypad.kl /etc/keymaps/microp-keypad.kl
+	cp -f /init.etc/keymaps/rhod100_uk_microp-keypad.kcm.bin /etc/keymaps/microp-keypad.kcm.bin
+	cp -f /init.etc/keymaps/rhod100_uk_navi_pad.kl /etc/keymaps/raph_navi_pad.kl
+elif /bin/grep -c 'physkeyboard=rhod100_nordic' /proc/cmdline >/dev/null ; then
+	echo "USING RHOD100 NORDIC LAYOUT"
+        cp -f /init.etc/keymaps/rhod100_nordic_microp-keypad.kl /etc/keymaps/microp-keypad.kl
+	cp -f /init.etc/keymaps/rhod100_nordic_microp-keypad.kcm.bin /etc/keymaps/microp-keypad.kcm.bin
+	cp -f /init.etc/keymaps/rhod100_nordic_navi_pad.kl /etc/keymaps/raph_navi_pad.kl
+elif /bin/grep -c 'physkeyboard=rhod400' /proc/cmdline >/dev/null ; then
+        echo "USING EXPERIMENTAL RHOD400 LAYOUT"
+        cp -f /init.etc/keymaps/rhod400_microp-keypad.kl /etc/keymaps/microp-keypad.kl
+        cp -f /init.etc/keymaps/rhod400_microp-keypad.kcm.bin /etc/keymaps/microp-keypad.kcm.bin
+        cp -f /init.etc/keymaps/rhod400_navi_pad.kl /etc/keymaps/raph_navi_pad.kl #does not exist, just following example
+elif /bin/grep -c 'physkeyboard=rhod500' /proc/cmdline >/dev/null ; then
+        echo "USING EXPERIMENTAL RHOD500 LAYOUT"
+        cp -f /init.etc/keymaps/rhod500_microp-keypad.kl /etc/keymaps/microp-keypad.kl
+        cp -f /init.etc/keymaps/rhod500_microp-keypad.kcm.bin /etc/keymaps/microp-keypad.kcm.bin
+        cp -f /init.etc/keymaps/rhod500_navi_pad.kl /etc/keymaps/raph_navi_pad.kl #does not exist, just following example
+else
+        echo "USING OLD KEYMAP"
+        cp -f /init.etc/keymaps/oldqwerty_microp-keypad.kcm.bin /etc/keymaps/microp-keypad.kcm.bin
+	cp -f /init.etc/keymaps/oldqwerty_microp-keypad.kl /etc/keymaps/microp-keypad.kl
+	cp -f /init.etc/keymaps/oldqwerty_raph_navi_pad.kl /etc/keymaps/raph_navi_pad.kl
+fi
+
+cp -af /init.etc/keymaps/qwerty.kcm.bin /init.etc/keymaps/qwerty.kl /etc/keymaps/
+mount --bind /etc/keymaps /system/usr/keychars
+mount --bind /etc/keymaps /system/usr/keylayout
+
+for i in /sys/class/input/input* ; do
+        if [ "`cat $i/name`" = "tssc-manager" ] ; then
+                touchscreendir=$i
+                echo "Touchscreen device directory is $i"
+        fi
+done
+
+if [ -f /sdcard/ts-calibration ] ; then
+        echo "Using Saved Touchscreen Calibration"
+	echo 128,128,1903,128,128,1907,1903,1907,1024,1024 > $touchscreendir/calibration_screen
+        cat /sdcard/ts-calibration > $touchscreendir/calibration_points
+else
+        mkdir /dev/graphics
+        mknod /dev/graphics/fb0 c 29 0
+        clear
+        echo; echo; echo; echo; echo; echo; echo; echo "Calibrating Touchscreen:"
+        echo "Click the Five Targets in order -- Top Left, Top Right, Middle, Bottom Left, Bottom Right"
+	echo "(Tap lightly. The screen is quite sensitive.)"
+        tssc-calibrate
+        echo 0,0,0,0,0,0,0,0,0,0 | cmp -s $touchscreendir/calibration_points # determine if calibration is still null -- means failed calibration
+        if [ $? -eq 0 ] ; then
+                echo "Touchscreen Calibration Failed"
+        else
+                echo "Touchscreen Calibration Successful; Saving..."
+                cat $touchscreendir/calibration_points > /sdcard/ts-calibration
+        fi
+fi
+
+mkdir /dev/msm_camera
+mknod /dev/msm_camera/control0 c 250 0
+mknod /dev/msm_camera/config0 c 250 1
+mknod /dev/msm_camera/frame0 c 250 2
+chmod a+s /bin/pppd
+
+exec /init.android

@@ -1,0 +1,34 @@
+#!/system/bin/sh
+case $1 in
+    ppp1)
+	/android/bin/iptables --flush;
+	/android/bin/iptables --table nat --flush;
+	/android/bin/iptables --delete-chain;
+	/android/bin/iptables --table nat --append POSTROUTING --out-interface ppp0 -j MASQUERADE;
+	/android/bin/iptables --append FORWARD --in-interface ppp1 -j ACCEPT;
+	echo 0 > /proc/sys/net/ipv4/ip_forward;
+	echo 1 > /proc/sys/net/ipv4/ip_forward;
+	;;
+    ppp0)
+        /system/bin/setprop "net.interfaces.defaultroute" "gprs"
+        ;;
+esac
+
+# Use interface name if linkname is not available
+NAME=${LINKNAME:-"$1"}
+
+/system/bin/setprop "net.$NAME.dns1" "$DNS1"
+/system/bin/setprop "net.$NAME.dns2" "$DNS2" 
+/system/bin/setprop "net.$NAME.local-ip" "$IPLOCAL" 
+/system/bin/setprop "net.$NAME.remote-ip" "$IPREMOTE" 
+/system/bin/setprop "net.dns1" "$DNS1"
+/system/bin/setprop "net.dns2" "$DNS2"
+modem_log()
+{
+	/bin/echo -e "${@}" >> /smodem/ppp.log
+}
+modem_log "Connection attempt SUCCESSFUL!"
+modem_log "Phone IP:  `/bin/ifconfig ppp0 | /bin/grep 'inet addr:' | /bin/cut -d':' -f2 | /bin/cut -d' ' -f1`"
+modem_log "Subnet  :  `/bin/ifconfig ppp0 | /bin/grep 'inet addr:' | /bin/cut -d':' -f4 | /bin/cut -d' ' -f1`"
+modem_log "P-t-P   :  `/bin/ifconfig ppp0 | /bin/grep 'inet addr:' | /bin/cut -d':' -f3 | /bin/cut -d' ' -f1`"
+modem_log "Done!"
